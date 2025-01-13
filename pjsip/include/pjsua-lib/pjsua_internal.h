@@ -79,12 +79,12 @@ struct pjsua_call_media
                                          bit 0/LSB : sequence flag
                                          bit 1     : timestamp flag         */
 
-    pjmedia_type                prev_type;     /**< Previous media type     */
-    pjmedia_stream_info         prev_aud_si;   /**< Prev audio stream info  */
-    pjmedia_vid_stream_info     prev_vid_si;   /**< Prev video stream info  */
-    pj_bool_t                   prev_srtp_use; /**< Prev SRTP use           */
-    pjmedia_srtp_info           prev_srtp_info;/**< Prev SRTP transport info*/
-    pj_bool_t                   prev_ice_use;  /**< Prev ICE use            */
+    pjmedia_type         prev_type;            /**< Previous media type     */
+    pj_sockaddr          prev_local_addr;      /**< Prev media local address*/
+    pj_sockaddr          prev_rem_addr;        /**< Prev media remote addr  */
+    pj_bool_t            prev_srtp_use;        /**< Prev SRTP use           */
+    pjmedia_srtp_info    prev_srtp_info;       /**< Prev SRTP transport info*/
+    pj_bool_t            prev_ice_use;         /**< Prev ICE use            */
     pjmedia_ice_transport_info  prev_ice_info; /**< Prev ICE transport info */
 
     pjmedia_transport   *tp;        /**< Current media transport (can be 0) */
@@ -241,6 +241,7 @@ struct pjsua_call
     unsigned             hangup_code;   /**< Hangup code.                   */
     pj_str_t             hangup_reason; /**< Hangup reason.                 */
     pjsua_msg_data      *hangup_msg_data;/**< Hangup message data.          */
+    pj_str_t             siprec_metadata;/** siprec metadata in body        */
 };
 
 
@@ -354,7 +355,7 @@ typedef struct pjsua_transport_data
 
     pj_bool_t                is_restarting;
     pj_status_t              restart_status;
-    pj_bool_t                has_bound_addr;
+    pj_bool_t                has_cfg_addr;
 } pjsua_transport_data;
 
 
@@ -368,6 +369,7 @@ typedef struct pjsua_buddy
 {
     pj_pool_t           *pool;      /**< Pool for this buddy.           */
     unsigned             index;     /**< Buddy index.                   */
+    pjsua_acc_id         acc_id;    /**< Account index.                 */
     void                *user_data; /**< Application data.              */
     pj_str_t             uri;       /**< Buddy URI.                     */
     pj_str_t             contact;   /**< Contact learned from subscrp.  */
@@ -377,10 +379,12 @@ typedef struct pjsua_buddy
     unsigned             port;      /**< Buddy port.                    */
     pj_bool_t            monitor;   /**< Should we monitor?             */
     pjsip_dialog        *dlg;       /**< The underlying dialog.         */
-    pjsip_evsub         *sub;       /**< Buddy presence subscription    */
+    pjsip_evsub         *sub;       /**< Buddy subscription             */
+    pj_bool_t            presence;  /**< Presence subscription?         */
     unsigned             term_code; /**< Subscription termination code  */
     pj_str_t             term_reason;/**< Subscription termination reason */
     pjsip_pres_status    status;    /**< Buddy presence status.         */
+    pjsip_dlg_event_status dlg_ev_status;/**< Buddy dialog event status */
     pj_timer_entry       timer;     /**< Resubscription timer           */
 } pjsua_buddy;
 
@@ -772,6 +776,7 @@ void pjsua_ice_check_start_trickling(pjsua_call *call,
 pj_bool_t   pjsua_call_media_is_changing(pjsua_call *call);
 pj_status_t pjsua_call_media_init(pjsua_call_media *call_med,
                                   pjmedia_type type,
+                                  const pjmedia_sdp_session *rem_sdp,
                                   const pjsua_transport_config *tcfg,
                                   int security_level,
                                   int *sip_err_code,
@@ -924,7 +929,7 @@ pj_status_t acquire_call(const char *title,
                          pjsua_call_id call_id,
                          pjsua_call **p_call,
                          pjsip_dialog **p_dlg);
-const char *good_number(char *buf, pj_int32_t val);
+const char *good_number(char *buf, unsigned buf_size, pj_int32_t val);
 void print_call(const char *title,
                 int call_id,
                 char *buf, pj_size_t size);

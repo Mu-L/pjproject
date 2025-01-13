@@ -117,6 +117,13 @@ void RtcpFbConfig::writeObject(ContainerNode &node) const PJSUA2_THROW(Error)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+SendRequestParam::SendRequestParam()
+: userData(NULL), method("")
+{
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 void SrtpCrypto::fromPj(const pjmedia_srtp_crypto &prm)
 {
     this->key       = pj2Str(prm.key);
@@ -313,6 +320,7 @@ void AccountCallConfig::readObject(const ContainerNode &node)
     NODE_READ_NUM_T   ( this_node, pjsua_call_hold_type, holdType);
     NODE_READ_NUM_T   ( this_node, pjsua_100rel_use, prackUse);
     NODE_READ_NUM_T   ( this_node, pjsua_sip_timer_use, timerUse);
+    NODE_READ_NUM_T   ( this_node, pjsua_sip_siprec_use, siprecUse);
     NODE_READ_UNSIGNED( this_node, timerMinSESec);
     NODE_READ_UNSIGNED( this_node, timerSessExpiresSec);
 }
@@ -325,6 +333,7 @@ void AccountCallConfig::writeObject(ContainerNode &node) const
     NODE_WRITE_NUM_T   ( this_node, pjsua_call_hold_type, holdType);
     NODE_WRITE_NUM_T   ( this_node, pjsua_100rel_use, prackUse);
     NODE_WRITE_NUM_T   ( this_node, pjsua_sip_timer_use, timerUse);
+    NODE_WRITE_NUM_T   ( this_node, pjsua_sip_siprec_use, siprecUse);
     NODE_WRITE_UNSIGNED( this_node, timerMinSESec);
     NODE_WRITE_UNSIGNED( this_node, timerSessExpiresSec);
 }
@@ -575,6 +584,7 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
     // AccountRegConfig
     ret.reg_uri                 = str2Pj(regConfig.registrarUri);
     ret.register_on_acc_add     = regConfig.registerOnAdd;
+    ret.disable_reg_on_modify   = regConfig.disableRegOnModify;
     ret.reg_timeout             = regConfig.timeoutSec;
     ret.reg_retry_interval      = regConfig.retryIntervalSec;
     ret.reg_first_retry_interval= regConfig.firstRetryIntervalSec;
@@ -620,11 +630,13 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
     ret.auth_pref.initial_auth  = sipConfig.authInitialEmpty;
     ret.auth_pref.algorithm     = str2Pj(sipConfig.authInitialAlgorithm);
     ret.transport_id            = sipConfig.transportId;
+    ret.ipv6_sip_use            = sipConfig.ipv6Use;
 
     // AccountCallConfig
     ret.call_hold_type          = callConfig.holdType;
     ret.require_100rel          = callConfig.prackUse;
     ret.use_timer               = callConfig.timerUse;
+    ret.use_siprec              = callConfig.siprecUse;
     ret.timer_setting.min_se    = callConfig.timerMinSESec;
     ret.timer_setting.sess_expires = callConfig.timerSessExpiresSec;
 
@@ -722,6 +734,7 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
 void AccountConfig::fromPj(const pjsua_acc_config &prm,
                            const pjsua_media_config *mcfg)
 {
+    pjsua_media_config default_mcfg;
     const pjsip_hdr *hdr;
     unsigned i;
 
@@ -732,6 +745,7 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
     // AccountRegConfig
     regConfig.registrarUri      = pj2Str(prm.reg_uri);
     regConfig.registerOnAdd     = (prm.register_on_acc_add != 0);
+    regConfig.disableRegOnModify= (prm.disable_reg_on_modify != 0);
     regConfig.timeoutSec        = prm.reg_timeout;
     regConfig.retryIntervalSec  = prm.reg_retry_interval;
     regConfig.firstRetryIntervalSec = prm.reg_first_retry_interval;
@@ -780,11 +794,13 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
     sipConfig.authInitialEmpty  = PJ2BOOL(prm.auth_pref.initial_auth);
     sipConfig.authInitialAlgorithm = pj2Str(prm.auth_pref.algorithm);
     sipConfig.transportId       = prm.transport_id;
+    sipConfig.ipv6Use           = prm.ipv6_sip_use;
 
     // AccountCallConfig
     callConfig.holdType         = prm.call_hold_type;
     callConfig.prackUse         = prm.require_100rel;
     callConfig.timerUse         = prm.use_timer;
+    callConfig.siprecUse        = prm.use_siprec;
     callConfig.timerMinSESec    = prm.timer_setting.min_se;
     callConfig.timerSessExpiresSec = prm.timer_setting.sess_expires;
 
@@ -825,7 +841,6 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
         natConfig.iceNoRtcp     = PJ2BOOL(prm.ice_cfg.ice_no_rtcp);
         natConfig.iceAlwaysUpdate = PJ2BOOL(prm.ice_cfg.ice_always_update);
     } else {
-        pjsua_media_config default_mcfg;
         if (!mcfg) {
             pjsua_media_config_default(&default_mcfg);
             mcfg = &default_mcfg;
@@ -852,7 +867,6 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
         natConfig.turnPassword  =
                 pj2Str(prm.turn_cfg.turn_auth_cred.data.static_cred.data);
     } else {
-        pjsua_media_config default_mcfg;
         if (!mcfg) {
             pjsua_media_config_default(&default_mcfg);
             mcfg = &default_mcfg;
@@ -989,8 +1003,9 @@ void Account::create(const AccountConfig &acc_cfg,
     acc_cfg.toPj(pj_acc_cfg);
 
     for (unsigned i = 0; i < pj_acc_cfg.cred_count; ++i) {
-            pjsip_cred_info *dst = &pj_acc_cfg.cred_info[i];
-            dst->ext.aka.cb = (pjsip_cred_cb)Endpoint::on_auth_create_aka_response_callback;
+        pjsip_cred_info *dst = &pj_acc_cfg.cred_info[i];
+        dst->ext.aka.cb = (pjsip_cred_cb)
+                          &Endpoint::on_auth_create_aka_response_callback;
     }
     pj_acc_cfg.user_data = (void*)this;
     PJSUA2_CHECK_EXPR( pjsua_acc_add(&pj_acc_cfg, make_default, &id) );
@@ -1059,6 +1074,16 @@ AccountInfo Account::getInfo() const PJSUA2_THROW(Error)
     return ai;
 }
 
+void Account::sendRequest(const pj::SendRequestParam& prm) PJSUA2_THROW(Error)
+{
+    pj_str_t method = str2Pj(prm.method);
+    pj_str_t dest_uri = str2Pj(prm.txOption.targetUri);
+    pjsua_msg_data msg_data;
+    prm.txOption.toPj(msg_data);
+
+    PJSUA2_CHECK_EXPR(pjsua_acc_send_request(id, &dest_uri, &method, NULL, prm.userData, &msg_data));
+}
+
 void Account::setRegistration(bool renew) PJSUA2_THROW(Error)
 {
     PJSUA2_CHECK_EXPR( pjsua_acc_set_registration(id, renew) );
@@ -1113,7 +1138,12 @@ BuddyVector2 Account::enumBuddies2() const PJSUA2_THROW(Error)
 
     PJSUA2_CHECK_EXPR( pjsua_enum_buddies(ids, &count) );
     for (i = 0; i < count; ++i) {
-        bv2.push_back(Buddy(ids[i]));
+        pjsua_buddy_info pbi;
+
+        pjsua_buddy_get_info(ids[i], &pbi);
+        if (id == pbi.acc_id) {
+            bv2.push_back(Buddy(ids[i]));
+        }
     }
 
     return bv2;
@@ -1140,11 +1170,17 @@ Buddy Account::findBuddy2(string uri) const PJSUA2_THROW(Error)
 {
     pj_str_t pj_uri;
     pjsua_buddy_id bud_id;
+    pjsua_buddy_info pbi;
 
     pj_strset2(&pj_uri, (char*)uri.c_str());
 
     bud_id = pjsua_buddy_find(&pj_uri);
-    if (id == PJSUA_INVALID_ID) {
+    if (bud_id == PJSUA_INVALID_ID) {
+        PJSUA2_RAISE_ERROR(PJ_ENOTFOUND);
+    }
+
+    pjsua_buddy_get_info(bud_id, &pbi);
+    if (id != pbi.acc_id) {
         PJSUA2_RAISE_ERROR(PJ_ENOTFOUND);
     }
 

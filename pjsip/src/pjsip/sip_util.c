@@ -24,6 +24,7 @@
 #include <pjsip/sip_transaction.h>
 #include <pjsip/sip_module.h>
 #include <pjsip/sip_errno.h>
+#include <pj/array.h>
 #include <pj/log.h>
 #include <pj/string.h>
 #include <pj/guid.h>
@@ -33,7 +34,7 @@
 #include <pj/assert.h>
 #include <pj/errno.h>
 
-#define THIS_FILE    "endpoint"
+#define THIS_FILE    "sip_util.c"
 
 static const char *event_str[] = 
 {
@@ -1025,11 +1026,29 @@ PJ_DEF(pj_status_t) pjsip_process_route_set(pjsip_tx_data *tdata,
         return status;
 
     /* If transport selector is set, set destination type accordingly */
-    if (tdata->tp_sel.type != PJSIP_TPSELECTOR_NONE && tdata->tp_sel.u.ptr) {
+    if ((tdata->tp_sel.type == PJSIP_TPSELECTOR_TRANSPORT ||
+         tdata->tp_sel.type == PJSIP_TPSELECTOR_LISTENER) &&
+        tdata->tp_sel.u.ptr)
+    {
+        pjsip_transport_type_e tp_type;
+
         if (tdata->tp_sel.type == PJSIP_TPSELECTOR_TRANSPORT)
-            dest_info->type = tdata->tp_sel.u.transport->key.type;
+            tp_type = tdata->tp_sel.u.transport->key.type;
         else if (tdata->tp_sel.type == PJSIP_TPSELECTOR_LISTENER)
-            dest_info->type = tdata->tp_sel.u.listener->type;
+            tp_type = tdata->tp_sel.u.listener->type;
+
+        /* Check if the transport selector type is compatible with
+         * the destination type.
+         */
+        if (dest_info->type != PJSIP_TRANSPORT_UNSPECIFIED &&
+            ((dest_info->type | PJSIP_TRANSPORT_IPV6) !=
+             (tp_type | PJSIP_TRANSPORT_IPV6)))
+        {
+            PJ_LOG(4,(THIS_FILE, "Unsuitable transport selected to "
+                                 "reach destination"));
+            return PJSIP_ETPNOTSUITABLE;
+        }
+        dest_info->type = tp_type;
     }
 
     /* If target URI is different than request URI, replace 
@@ -1306,6 +1325,29 @@ static void stateless_send_transport_cb( void *token,
 
 }
 
+/* Resort addresses based on preferred address family.
+ * Note that the order of addresses within the same address family will
+ * be preserved.
+ */
+static void resort_address(pjsip_server_addresses *addr, int af)
+{
+    unsigned i = 0, j = 0;
+
+    while (j < addr->count) {
+        if (addr->entry[j].addr.addr.sa_family == af) {
+            if (i != j) {
+                pjsip_server_address_record temp;
+
+                pj_memcpy(&temp, &addr->entry[j], sizeof(temp));
+                pj_array_insert(addr->entry, sizeof(addr->entry[0]),
+                                j, i, &temp);
+            }
+            i++;
+        }
+        j++;
+    }
+}
+
 /* Resolver callback for sending stateless request. */
 static void 
 stateless_send_resolver_callback( pj_status_t status,
@@ -1382,6 +1424,17 @@ stateless_send_resolver_callback( pj_status_t status,
         }
     }
 
+    if (tdata->tp_sel.type == PJSIP_TPSELECTOR_IP_VER) {
+        PJ_LOG(5, (THIS_FILE, "Resorting target addresses based on "
+                   "%s preference",
+                   tdata->tp_sel.u.ip_ver <= PJSIP_TPSELECTOR_PREFER_IPV4?
+                   "IPv4": "IPv6"));
+        if (tdata->tp_sel.u.ip_ver == PJSIP_TPSELECTOR_PREFER_IPV4)
+            resort_address(&tdata->dest_info.addr, pj_AF_INET());
+        else if (tdata->tp_sel.u.ip_ver == PJSIP_TPSELECTOR_PREFER_IPV6)
+            resort_address(&tdata->dest_info.addr, pj_AF_INET6());
+    }
+
     /* Process the addresses. */
     stateless_send_transport_cb( stateless_data, tdata, -PJ_EPENDING);
 }
@@ -1428,6 +1481,28 @@ PJ_DEF(pj_status_t) pjsip_endpt_send_request_stateless(pjsip_endpoint *endpt,
         if (!tdata->dest_info.name.slen) {
             pj_strdup(tdata->pool, &tdata->dest_info.name,
                       &dest_info.addr.host);
+        } else {
+            /* Check if:
+             * - User configures transport to use a specific IP version
+             * - The IP version doesn't match with destination info
+             */
+            if (tdata->tp_sel.type == PJSIP_TPSELECTOR_IP_VER &&
+                ((tdata->tp_sel.u.ip_ver == PJSIP_TPSELECTOR_USE_IPV4_ONLY &&
+                  (dest_info.type & PJSIP_TRANSPORT_IPV6) != 0) ||
+                 (tdata->tp_sel.u.ip_ver == PJSIP_TPSELECTOR_USE_IPV6_ONLY &&
+                  (dest_info.type & PJSIP_TRANSPORT_IPV6) == 0)))
+            {
+                PJ_LOG(5, (THIS_FILE, "Using initial dest %.*s",
+                           (int)tdata->dest_info.name.slen,
+                           tdata->dest_info.name.ptr));
+                pj_strdup(tdata->pool, &dest_info.addr.host,
+                          &tdata->dest_info.name);
+                if (tdata->tp_sel.u.ip_ver == PJSIP_TPSELECTOR_USE_IPV4_ONLY) {
+                    dest_info.type &= ~PJSIP_TRANSPORT_IPV6;
+                } else {
+                    dest_info.type |= PJSIP_TRANSPORT_IPV6;
+                }
+            }
         }
 
         pjsip_endpt_resolve( endpt, tdata->pool, &dest_info, stateless_data,
@@ -1868,6 +1943,7 @@ PJ_DEF(pj_status_t) pjsip_endpt_respond_stateless( pjsip_endpoint *endpt,
     pj_status_t status;
     pjsip_response_addr res_addr;
     pjsip_tx_data *tdata;
+    pjsip_transaction *tsx;
 
     /* Verify arguments. */
     PJ_ASSERT_RETURN(endpt && rdata, PJ_EINVAL);
@@ -1875,10 +1951,13 @@ PJ_DEF(pj_status_t) pjsip_endpt_respond_stateless( pjsip_endpoint *endpt,
                      PJSIP_ENOTREQUESTMSG);
 
     /* Check that no UAS transaction has been created for this request. 
-     * If UAS transaction has been created for this request, application
-     * MUST send the response statefully using that transaction.
+     * If UAS transaction has been created for this request and its state
+     * is not TERMINATED/DESTROYED, application MUST send the response
+     * statefully using that transaction.
      */
-    PJ_ASSERT_RETURN(pjsip_rdata_get_tsx(rdata)==NULL, PJ_EINVALIDOP);
+    tsx = pjsip_rdata_get_tsx(rdata);
+    if (tsx && tsx->state < PJSIP_TSX_STATE_TERMINATED)
+        return PJ_EINVALIDOP;
 
     /* Create response message */
     status = pjsip_endpt_create_response( endpt, rdata, st_code, st_text, 

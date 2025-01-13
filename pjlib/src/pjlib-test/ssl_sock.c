@@ -350,7 +350,8 @@ static pj_bool_t ssl_on_data_read(pj_ssl_sock_t *ssock,
                 }
 
                 pj_sockaddr_print((pj_sockaddr_t*)&info.local_addr, buf, sizeof(buf), 1);
-                PJ_LOG(3, ("", "...%s successfully recv %d bytes echo", buf, st->recv));
+                PJ_LOG(3, ("", "...%s successfully recv %lu bytes echo", buf,
+                           (unsigned long)st->recv));
                 st->done = PJ_TRUE;
             }
         }
@@ -501,7 +502,8 @@ static int https_client_test(unsigned ms_timeout)
     }
 
     PJ_LOG(3, ("", "...Done!"));
-    PJ_LOG(3, ("", ".....Sent/recv: %d/%d bytes", state.sent, state.recv));
+    PJ_LOG(3, ("", ".....Sent/recv: %lu/%lu bytes", (unsigned long)state.sent,
+               (unsigned long)state.recv));
 
 on_return:
     if (ssock && !state.err && !state.done) 
@@ -536,6 +538,43 @@ static pj_status_t load_cert_to_buf(pj_pool_t *pool, const pj_str_t *file_name,
     fd = NULL;
     return status;
 }
+#endif
+
+#if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_SCHANNEL)
+
+static pj_status_t load_cert_from_store(pj_pool_t *pool,
+                                        pj_ssl_cert_t **p_cert)
+{
+#if 0
+    /* To test loading certificate from the store, follow these steps:
+     * 1. Install the certificate & the private-key pair to the store,
+     *    and optionally set the friendly-name for it.
+     * 2. Update the lookup criteria below (field & keyword).
+     */
+    pj_ssl_cert_lookup_criteria crit = {0};
+
+    /* Lookup by subject */
+    crit.type = PJ_SSL_CERT_LOOKUP_SUBJECT;
+    pj_cstr(&crit.keyword, "test.pjsip.org");
+
+    /* Lookup by friendly-name */
+    //crit.type = PJ_SSL_CERT_LOOKUP_FRIENDLY_NAME;
+    //pj_cstr(&crit.keyword, "schannel-test");
+
+    /* Lookup by fingerprint */
+    //crit.type = PJ_SSL_CERT_LOOKUP_FINGERPRINT;
+    //pj_cstr(&crit.keyword, "\x08\x3a\x6c\xdc\xd0\x19\x59\xec\x28\xc3"
+    //                       "\x81\xb8\xc0\x21\x09\xe9\xd5\xf6\x57\x7d");
+
+    return pj_ssl_cert_load_from_store(pool, &crit, p_cert);
+#else
+    /* Set no certificate, Schannel will use self-signed cert */
+    PJ_UNUSED_ARG(pool);
+    PJ_UNUSED_ARG(p_cert);
+    return PJ_ENOTFOUND;
+#endif
+}
+
 #endif
 
 static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
@@ -600,6 +639,19 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
     }
 
     /* Set server cert */
+#if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_SCHANNEL)
+    /* Schannel backend currently can only load certificates from
+     * OS cert store. If the certificate loading fails, we'll skip setting
+     * certificate, so the SSL socket will create & use a self-signed cert.
+     */
+    status = load_cert_from_store(pool, &cert);
+    if (status == PJ_SUCCESS) {
+        status = pj_ssl_sock_set_certificate(ssock_serv, pool, cert);
+        if (status != PJ_SUCCESS) {
+            goto on_return;
+        }
+    }
+#else
     {
         pj_str_t ca_file = pj_str(CERT_CA_FILE);
         pj_str_t cert_file = pj_str(CERT_FILE);
@@ -641,6 +693,7 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
             goto on_return;
         }
     }
+#endif
 
     status = pj_ssl_sock_start_accept(ssock_serv, pool, &addr, pj_sockaddr_get_len(&addr));
     if (status != PJ_SUCCESS) {
@@ -666,10 +719,12 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
     state_cli.is_verbose = PJ_TRUE;
 
     {
+        /* srand() should be done centrally (blp)
         pj_time_val now;
 
         pj_gettimeofday(&now);
         pj_srand((unsigned)now.sec);
+        */
         state_cli.send_str_len = (pj_rand() % 5 + 1) * 1024 + pj_rand() % 1024;
     }
     state_cli.send_str = (char*)pj_pool_alloc(pool, state_cli.send_str_len);
@@ -684,9 +739,22 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
         goto on_return;
     }
 
-    /* Set cert for client */
-    {
+    /* Set cert for client.
+     * Reusing certificate for server above, but if client_provide_cert
+     * is not set, override the certificate with CA certificate.
+     */
+#if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_SCHANNEL)
+    if (client_provide_cert) {
+        status = load_cert_from_store(pool, &cert);
+        if (status == PJ_SUCCESS)
+            status = pj_ssl_sock_set_certificate(ssock_cli, pool, cert);
 
+        if (status != PJ_SUCCESS) {
+            goto on_return;
+        }
+    }
+#else
+    {
         if (!client_provide_cert) {
             pj_str_t ca_file = pj_str(CERT_CA_FILE);
             pj_str_t null_str = pj_str("");
@@ -718,6 +786,7 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
             goto on_return;
         }
     }
+#endif
 
     status = pj_ssl_sock_start_connect(ssock_cli, pool, &addr, &listen_addr, pj_sockaddr_get_len(&addr));
     if (status == PJ_SUCCESS) {
@@ -755,7 +824,8 @@ static int echo_test(pj_ssl_sock_proto srv_proto, pj_ssl_sock_proto cli_proto,
     }
 
     PJ_LOG(3, ("", "...Done!"));
-    PJ_LOG(3, ("", ".....Sent/recv: %d/%d bytes", state_cli.sent, state_cli.recv));
+    PJ_LOG(3, ("", ".....Sent/recv: %lu/%lu bytes", (unsigned long)state_cli.sent,
+               (unsigned long)state_cli.recv));
 
 on_return:
 #if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_DARWIN) || \
@@ -923,7 +993,41 @@ static int client_non_ssl(unsigned ms_timeout)
         goto on_return;
     }
 
+    pj_ssl_sock_param_default(&param);
+    param.cb.on_accept_complete2 = &ssl_on_accept_complete;
+    param.cb.on_data_read = &ssl_on_data_read;
+    param.cb.on_data_sent = &ssl_on_data_sent;
+    param.ioqueue = ioqueue;
+    param.timer_heap = timer;
+    param.timeout.sec = 0;
+    param.timeout.msec = ms_timeout;
+    pj_time_val_normalize(&param.timeout);
+
+    /* SERVER */
+    param.user_data = &state_serv;
+    state_serv.pool = pool;
+    state_serv.is_server = PJ_TRUE;
+    state_serv.is_verbose = PJ_TRUE;
+
+    status = pj_ssl_sock_create(pool, &param, &ssock_serv);
+    if (status != PJ_SUCCESS) {
+        goto on_return;
+    }
+
     /* Set cert */
+#if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_SCHANNEL)
+    /* Schannel backend currently can only load certificates from
+     * OS cert store. If the certificate loading fails, we'll skip setting
+     * certificate, so the SSL socket will create & use a self-signed cert.
+     */
+    status = load_cert_from_store(pool, &cert);
+    if (status == PJ_SUCCESS) {
+        status = pj_ssl_sock_set_certificate(ssock_serv, pool, cert);
+        if (status != PJ_SUCCESS) {
+            goto on_return;
+        }
+    }
+#else
     {
         pj_str_t ca_file = pj_str(CERT_CA_FILE);
         pj_str_t cert_file = pj_str(CERT_FILE);
@@ -961,31 +1065,11 @@ static int client_non_ssl(unsigned ms_timeout)
         }
     }
 
-    pj_ssl_sock_param_default(&param);
-    param.cb.on_accept_complete2 = &ssl_on_accept_complete;
-    param.cb.on_data_read = &ssl_on_data_read;
-    param.cb.on_data_sent = &ssl_on_data_sent;
-    param.ioqueue = ioqueue;
-    param.timer_heap = timer;
-    param.timeout.sec = 0;
-    param.timeout.msec = ms_timeout;
-    pj_time_val_normalize(&param.timeout);
-
-    /* SERVER */
-    param.user_data = &state_serv;
-    state_serv.pool = pool;
-    state_serv.is_server = PJ_TRUE;
-    state_serv.is_verbose = PJ_TRUE;
-
-    status = pj_ssl_sock_create(pool, &param, &ssock_serv);
-    if (status != PJ_SUCCESS) {
-        goto on_return;
-    }
-
     status = pj_ssl_sock_set_certificate(ssock_serv, pool, cert);
     if (status != PJ_SUCCESS) {
         goto on_return;
     }
+#endif
 
     /* Init bind address */
     {
@@ -1207,8 +1291,11 @@ static int server_non_ssl(unsigned ms_timeout)
     PJ_LOG(3, ("", "...Done!"));
 
 on_return:
-    if (asock_serv)
+    if (asock_serv) {
         pj_activesock_close(asock_serv);
+    } else if (sock != PJ_INVALID_SOCKET) {
+        pj_sock_close(sock);
+    }
     if (ssock_cli && !state_cli.err && !state_cli.done)
         pj_ssl_sock_close(ssock_cli);
     if (timer)
@@ -1255,7 +1342,49 @@ static int perf_test(unsigned clients, unsigned ms_handshake_timeout)
         goto on_return;
     }
 
+    pj_ssl_sock_param_default(&param);
+    param.cb.on_accept_complete2 = &ssl_on_accept_complete;
+    param.cb.on_connect_complete = &ssl_on_connect_complete;
+    param.cb.on_data_read = &ssl_on_data_read;
+    param.cb.on_data_sent = &ssl_on_data_sent;
+    param.ioqueue = ioqueue;
+    param.timer_heap = timer;
+    param.timeout.sec = 0;
+    param.timeout.msec = ms_handshake_timeout;
+    pj_time_val_normalize(&param.timeout);
+
+    /* Init default bind address */
+    {
+        pj_str_t tmp_st;
+        pj_sockaddr_init(PJ_AF_INET, &addr, pj_strset2(&tmp_st, "127.0.0.1"), 0);
+    }
+
+    /* SERVER */
+    param.user_data = &state_serv;
+
+    state_serv.pool = pool;
+    state_serv.echo = PJ_TRUE;
+    state_serv.is_server = PJ_TRUE;
+
+    status = pj_ssl_sock_create(pool, &param, &ssock_serv);
+    if (status != PJ_SUCCESS) {
+        goto on_return;
+    }
+
     /* Set cert */
+#if (PJ_SSL_SOCK_IMP == PJ_SSL_SOCK_IMP_SCHANNEL)
+    /* Schannel backend currently can only load certificates from
+     * OS cert store. If the certificate loading fails, we'll skip setting
+     * certificate, so the SSL socket will create & use a self-signed cert.
+     */
+    status = load_cert_from_store(pool, &cert);
+    if (status == PJ_SUCCESS) {
+        status = pj_ssl_sock_set_certificate(ssock_serv, pool, cert);
+        if (status != PJ_SUCCESS) {
+            goto on_return;
+        }
+    }
+#else
     {
         pj_str_t ca_file = pj_str(CERT_CA_FILE);
         pj_str_t cert_file = pj_str(CERT_FILE);
@@ -1293,39 +1422,11 @@ static int perf_test(unsigned clients, unsigned ms_handshake_timeout)
         }
     }
 
-    pj_ssl_sock_param_default(&param);
-    param.cb.on_accept_complete2 = &ssl_on_accept_complete;
-    param.cb.on_connect_complete = &ssl_on_connect_complete;
-    param.cb.on_data_read = &ssl_on_data_read;
-    param.cb.on_data_sent = &ssl_on_data_sent;
-    param.ioqueue = ioqueue;
-    param.timer_heap = timer;
-    param.timeout.sec = 0;
-    param.timeout.msec = ms_handshake_timeout;
-    pj_time_val_normalize(&param.timeout);
-
-    /* Init default bind address */
-    {
-        pj_str_t tmp_st;
-        pj_sockaddr_init(PJ_AF_INET, &addr, pj_strset2(&tmp_st, "127.0.0.1"), 0);
-    }
-
-    /* SERVER */
-    param.user_data = &state_serv;
-
-    state_serv.pool = pool;
-    state_serv.echo = PJ_TRUE;
-    state_serv.is_server = PJ_TRUE;
-
-    status = pj_ssl_sock_create(pool, &param, &ssock_serv);
-    if (status != PJ_SUCCESS) {
-        goto on_return;
-    }
-
     status = pj_ssl_sock_set_certificate(ssock_serv, pool, cert);
     if (status != PJ_SUCCESS) {
         goto on_return;
     }
+#endif
 
     status = pj_ssl_sock_start_accept(ssock_serv, pool, &addr, pj_sockaddr_get_len(&addr));
     if (status != PJ_SUCCESS) {
@@ -1349,14 +1450,6 @@ static int perf_test(unsigned clients, unsigned ms_handshake_timeout)
     clients_num = clients;
     param.timeout.sec = 0;
     param.timeout.msec = 0;
-
-    /* Init random seed */
-    {
-        pj_time_val now;
-
-        pj_gettimeofday(&now);
-        pj_srand((unsigned)now.sec);
-    }
 
     /* Allocate SSL socket pointers and test state */
     ssock_cli = (pj_ssl_sock_t**)pj_pool_calloc(pool, clients, sizeof(pj_ssl_sock_t*));
@@ -1448,7 +1541,7 @@ static int perf_test(unsigned clients, unsigned ms_handshake_timeout)
         pj_gettimeofday(&stop);
         PJ_TIME_VAL_SUB(stop, start);
 
-        PJ_LOG(3, ("", ".....Setup & data transfer duration: %d.%03ds", stop.sec, stop.msec));
+        PJ_LOG(3, ("", ".....Setup & data transfer duration: %ld.%03lds", stop.sec, stop.msec));
     }
 
     /* Check clients status */
@@ -1461,7 +1554,8 @@ static int perf_test(unsigned clients, unsigned ms_handshake_timeout)
     }
 
     PJ_LOG(3, ("", ".....Clients: %d (%d errors)", clients, cli_err));
-    PJ_LOG(3, ("", ".....Total sent/recv: %d/%d bytes", tot_sent, tot_recv));
+    PJ_LOG(3, ("", ".....Total sent/recv: %lu/%lu bytes",
+               (unsigned long)tot_sent, (unsigned long)tot_recv));
 
 on_return:
     if (ssock_serv) 
@@ -1528,6 +1622,15 @@ int ssl_sock_test(void)
      * which require SSL server, for now.
      */
 
+    /* Schannel backend notes:
+     * - currently it does not support ciphers settings, so we exclude tests
+     *   whose ciphers setting is specified.
+     * - TLS protocol older than 1.0 is not supported, TLS 1.0 & 1.1 will be
+     *   disabled soon, TLS 1.3 is supported since Windows 11, so for now
+     *   we only include tests with TLS 1.2.
+     */
+
+#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_SCHANNEL)
     PJ_LOG(3,("", "..echo test w/ TLSv1 and PJ_TLS_RSA_WITH_AES_256_CBC_SHA cipher"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_TLS1, PJ_SSL_SOCK_PROTO_TLS1, 
                     PJ_TLS_RSA_WITH_AES_256_CBC_SHA, PJ_TLS_RSA_WITH_AES_256_CBC_SHA, 
@@ -1535,12 +1638,16 @@ int ssl_sock_test(void)
     if (ret != 0)
         return ret;
 
+    /* SSLv23 is deprecated */
+    /*
     PJ_LOG(3,("", "..echo test w/ SSLv23 and PJ_TLS_RSA_WITH_AES_256_CBC_SHA cipher"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_SSL23, PJ_SSL_SOCK_PROTO_SSL23, 
                     PJ_TLS_RSA_WITH_AES_256_CBC_SHA, PJ_TLS_RSA_WITH_AES_256_CBC_SHA,
                     PJ_FALSE, PJ_FALSE);
     if (ret != 0)
         return ret;
+    */
+#endif
 
     PJ_LOG(3,("", "..echo test w/ compatible proto: server TLSv1.2 vs client TLSv1.2"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_TLS1_2, PJ_SSL_SOCK_PROTO_TLS1_2, 
@@ -1549,6 +1656,7 @@ int ssl_sock_test(void)
     if (ret != 0)
         return ret;
 
+#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_SCHANNEL)
     PJ_LOG(3,("", "..echo test w/ compatible proto: server TLSv1.2+1.3 vs client TLSv1.3"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_TLS1_2 | PJ_SSL_SOCK_PROTO_TLS1_3, PJ_SSL_SOCK_PROTO_TLS1_3, 
                     -1, -1,
@@ -1562,9 +1670,10 @@ int ssl_sock_test(void)
                     PJ_FALSE, PJ_FALSE);
     if (ret == 0)
         return PJ_EBUG;
+#endif
 
 /* We can't set min/max proto for TLS protocol higher than 1.0. */
-#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_DARWIN)
+#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_DARWIN && PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_SCHANNEL)
     PJ_LOG(3,("", "..echo test w/ incompatible proto: server TLSv1.2 vs client TLSv1.3"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_TLS1_2, PJ_SSL_SOCK_PROTO_TLS1_3, 
                     -1, -1,
@@ -1577,7 +1686,7 @@ int ssl_sock_test(void)
  * deprecated and we only have sec_protocol_options_append_tls_ciphersuite(),
  * but there's no API to remove certain or all ciphers.
  */
-#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_APPLE)
+#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_APPLE && PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_SCHANNEL)
     PJ_LOG(3,("", "..echo test w/ incompatible ciphers"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_DEFAULT, PJ_SSL_SOCK_PROTO_DEFAULT, 
                     PJ_TLS_RSA_WITH_DES_CBC_SHA, PJ_TLS_RSA_WITH_AES_256_CBC_SHA,
@@ -1586,6 +1695,7 @@ int ssl_sock_test(void)
         return PJ_EBUG;
 #endif
 
+#if (PJ_SSL_SOCK_IMP != PJ_SSL_SOCK_IMP_SCHANNEL)
     PJ_LOG(3,("", "..echo test w/ client cert required but not provided"));
     ret = echo_test(PJ_SSL_SOCK_PROTO_DEFAULT, PJ_SSL_SOCK_PROTO_DEFAULT, 
                     PJ_TLS_RSA_WITH_AES_256_CBC_SHA, PJ_TLS_RSA_WITH_AES_256_CBC_SHA,
@@ -1599,6 +1709,7 @@ int ssl_sock_test(void)
                     PJ_TRUE, PJ_TRUE);
     if (ret != 0)
         return ret;
+#endif
 
 #if WITH_BENCHMARK
     PJ_LOG(3,("", "..performance test"));

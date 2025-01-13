@@ -43,7 +43,7 @@ PJ_DEF(pj_status_t) pjmedia_stream_info_parse_fmtp( pj_pool_t *pool,
 {
     const pjmedia_sdp_attr *attr;
     pjmedia_sdp_fmtp sdp_fmtp;
-    char *p, *p_end, fmt_buf[8];
+    char fmt_buf[8];
     pj_str_t fmt;
     pj_status_t status;
 
@@ -52,7 +52,7 @@ PJ_DEF(pj_status_t) pjmedia_stream_info_parse_fmtp( pj_pool_t *pool,
     pj_bzero(fmtp, sizeof(pjmedia_codec_fmtp));
 
     /* Get "fmtp" attribute for the format */
-    pj_ansi_sprintf(fmt_buf, "%d", pt);
+    pj_ansi_snprintf(fmt_buf, sizeof(fmt_buf), "%d", pt);
     fmt = pj_str(fmt_buf);
     attr = pjmedia_sdp_media_find_attr2(m, "fmtp", &fmt);
     if (attr == NULL)
@@ -63,9 +63,16 @@ PJ_DEF(pj_status_t) pjmedia_stream_info_parse_fmtp( pj_pool_t *pool,
     if (status != PJ_SUCCESS)
         return status;
 
+    return pjmedia_stream_info_parse_fmtp_data(pool, &sdp_fmtp.fmt_param, fmtp);
+}
+
+PJ_DECL(pj_status_t) pjmedia_stream_info_parse_fmtp_data(pj_pool_t *pool,
+                                                         const pj_str_t *str,
+                                                         pjmedia_codec_fmtp *fmtp)
+{
     /* Prepare parsing */
-    p = sdp_fmtp.fmt_param.ptr;
-    p_end = p + sdp_fmtp.fmt_param.slen;
+    char *p = str->ptr;
+    char *p_end = p + str->slen;
 
     /* Parse */
     while (p < p_end) {
@@ -85,7 +92,7 @@ PJ_DEF(pj_status_t) pjmedia_stream_info_parse_fmtp( pj_pool_t *pool,
 
         /* Get token */
         start = p;
-        while (p < p_end && *p != ';' && *p != '=') ++p;
+        while (p < p_end && *p != ';') ++p;
         end = p - 1;
 
         /* Right trim */
@@ -98,20 +105,41 @@ PJ_DEF(pj_status_t) pjmedia_stream_info_parse_fmtp( pj_pool_t *pool,
 
         /* Store token */
         if (end > start) {
+            char *p2 = start;
+
             if (pool) {
                 token = (char*)pj_pool_alloc(pool, end - start);
-                pj_ansi_strncpy(token, start, end - start);
+                pj_memcpy(token, start, end - start);
             } else {
                 token = start;
             }
-            if (*p == '=')
-                /* Got param name */
-                pj_strset(&fmtp->param[fmtp->cnt].name, token, end - start);
-            else
-                /* Got param value */
-                pj_strset(&fmtp->param[fmtp->cnt++].val, token, end - start);
-        } else if (*p != '=') {
-            ++fmtp->cnt;
+
+            /* Check if it contains '=' */
+            while (p2 < end && *p2 != '=') ++p2;
+
+            if (p2 < end) {
+                char *p3;
+
+                pj_assert (*p2 == '=');
+
+                /* Trim whitespace before '=' */
+                p3 = p2 - 1;
+                while (p3 >= start && (*p3 == ' ' || *p3 == '\t')) --p3;
+
+                /* '=' found, get param name */
+                pj_strset(&fmtp->param[fmtp->cnt].name, token, p3 - start + 1);
+
+                /* Trim whitespace after '=' */
+                p3 = p2 + 1;
+                while (p3 < end && (*p3 == ' ' || *p3 == '\t')) ++p3;
+
+                /* Advance token to first char after '=' */
+                token = token + (p3 - start);
+                start = p3;
+            }
+
+            /* Got param value */
+            pj_strset(&fmtp->param[fmtp->cnt++].val, token, end - start);
         }
 
         /* Next */

@@ -60,11 +60,11 @@
 #endif
 
 #ifndef PJMEDIA_VSTREAM_SIZE
-#   define PJMEDIA_VSTREAM_SIZE 1000
+#   define PJMEDIA_VSTREAM_SIZE 16000
 #endif
 
 #ifndef PJMEDIA_VSTREAM_INC
-#   define PJMEDIA_VSTREAM_INC  1000
+#   define PJMEDIA_VSTREAM_INC  4000
 #endif
 
 /* Due to network MTU limitation, a picture bitstream may be splitted into
@@ -584,6 +584,13 @@ static pj_status_t send_rtcp(pjmedia_vid_stream *stream,
     int len, max_len;
     pj_status_t status;
 
+
+    /* To avoid deadlock with media transport, we use the transport's
+     * group lock.
+     */
+    if (stream->transport->grp_lock)
+        pj_grp_lock_acquire( stream->transport->grp_lock );
+
     /* Build RTCP RR/SR packet */
     pjmedia_rtcp_build_rtcp(&stream->rtcp, &sr_rr_pkt, &len);
 
@@ -664,6 +671,10 @@ static pj_status_t send_rtcp(pjmedia_vid_stream *stream,
             stream->rtcp_tx_err_cnt = 0;
         }
     }
+
+    if (stream->transport->grp_lock)
+        pj_grp_lock_release( stream->transport->grp_lock );
+
     return status;
 }
 
@@ -805,6 +816,9 @@ static void on_rx_rtp( pjmedia_tp_cb_param *param)
         return;
     }
 
+    /* Add ref counter to avoid premature destroy from callbacks */
+    pj_grp_lock_add_ref(stream->grp_lock);
+
     /* Ignore the packet if decoder is paused */
     if (channel->paused)
         goto on_return;
@@ -816,7 +830,7 @@ static void on_rx_rtp( pjmedia_tp_cb_param *param)
                                 PJMEDIA_VID_STREAM_CHECK_RTP_PT);
 #if !PJMEDIA_VID_STREAM_CHECK_RTP_PT
     if (hdr->pt != channel->rtp.out_pt) {
-        seq_st.status.flag.badpt = 1;
+        seq_st.status.flag.badpt = -1;
     }
 #endif
     if (seq_st.status.value) {
@@ -1031,6 +1045,8 @@ on_return:
             stream->initial_rr = PJ_TRUE;
         }
     }
+
+    pj_grp_lock_dec_ref(stream->grp_lock);
 }
 
 
@@ -1720,7 +1736,7 @@ static pj_status_t create_channel( pj_pool_t *pool,
                pi->fmt.det.vid.size.w, pi->fmt.det.vid.size.h,
                pjmedia_fourcc_name(pi->fmt.id, fourcc_name),
                (dir==PJMEDIA_DIR_ENCODING?"->":"<-"),
-               info->codec_info.encoding_name.slen,
+               (int)info->codec_info.encoding_name.slen,
                info->codec_info.encoding_name.ptr,
                pi->fmt.det.vid.fps.num, pi->fmt.det.vid.fps.denum,
                pi->fmt.det.vid.fps.num/pi->fmt.det.vid.fps.denum));
@@ -1953,7 +1969,7 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_create(
     if (info->jb_max_pre >= frm_ptime)
         jb_max_pre  = info->jb_max_pre * chunks_per_frm / frm_ptime;
     else
-        jb_max_pre  = jb_max * 4 / 5;
+        jb_max_pre  = PJ_MAX(1, jb_max * 4 / 5);
 
     /* JB init prefetch, default 0 */
     if (info->jb_init >= frm_ptime)
@@ -2033,7 +2049,7 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_create(
     pj_sockaddr_cp(&stream->rem_rtp_addr, &info->rem_addr);
     if (info->rtcp_mux) {
         pj_sockaddr_cp(&att_param.rem_rtcp, &info->rem_addr);
-    } else if (pj_sockaddr_has_addr(&info->rem_rtcp.addr)) {
+    } else if (pj_sockaddr_has_addr(&info->rem_rtcp)) {
         pj_sockaddr_cp(&att_param.rem_rtcp, &info->rem_rtcp);
     }
     att_param.addr_len = pj_sockaddr_get_len(&info->rem_addr);
@@ -2046,6 +2062,10 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_create(
         goto err_cleanup;
 
     stream->transport = tp;
+
+    /* Also add ref the transport group lock */
+    if (stream->transport->grp_lock)
+        pj_grp_lock_add_ref(stream->transport->grp_lock);
 
     /* Send RTCP SDES */
     if (!stream->rtcp_sdes_bye_disabled) {
@@ -2196,7 +2216,7 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_destroy( pjmedia_vid_stream *stream )
      */
     if (stream->transport) {
         pjmedia_transport_detach(stream->transport, stream);
-        stream->transport = NULL;
+        //stream->transport = NULL;
     }
 
     /* This function may be called when stream is partly initialized,
@@ -2221,6 +2241,10 @@ static void on_destroy( void *arg )
     pj_assert(stream);
 
     PJ_LOG(4,(THIS_FILE, "Destroying %s..", stream->name.ptr));
+
+    /* Release ref to transport */
+    if (stream->transport && stream->transport->grp_lock)
+        pj_grp_lock_dec_ref(stream->transport->grp_lock);
 
     /* Free codec. */
     if (stream->codec) {
@@ -2355,6 +2379,19 @@ PJ_DEF(pj_status_t) pjmedia_vid_stream_start(pjmedia_vid_stream *stream)
     }
 
     return PJ_SUCCESS;
+}
+
+
+/*
+ * Modify codec parameter.
+ */
+PJ_DEF(pj_status_t)
+pjmedia_vid_stream_modify_codec_param(pjmedia_vid_stream *stream,
+                                      const pjmedia_vid_codec_param *param)
+{
+    PJ_ASSERT_RETURN(stream && param, PJ_EINVAL);
+
+    return pjmedia_vid_codec_modify(stream->codec, param);
 }
 
 

@@ -56,6 +56,7 @@ class MyObserver implements MyAppObserver {
         public void notifyCallMediaState(MyCall call) {
         }
 
+        @Override
         public void notifyCallState(MyCall call) {
                 if (currentCall == null || call.getId() != currentCall.getId())
                         return;
@@ -80,6 +81,9 @@ class MyObserver implements MyAppObserver {
 
         @Override
         public void notifyChangeNetwork() {}
+        
+        @Override
+        public void notifyCallMediaEvent(MyCall call, OnCallMediaEventParam prm) {}
 }
 
 class MyShutdownHook extends Thread {
@@ -101,7 +105,8 @@ public class sample {
         private static MyApp app = new MyApp();
         private static MyObserver observer = new MyObserver();
         private static MyAccount account = null;
-        private static AccountConfig accCfg = null;             
+        private static AccountConfig accCfg = null;
+        private static MyCall call = null;
 
         // Snippet code to set native window to output video 
         /*
@@ -152,6 +157,15 @@ public class sample {
 
                 try {
                         account.modify(accCfg);
+
+                        /* Make call to self */
+                        /*
+                        call = new MyCall(app.accList.get(0), -1);
+                        CallOpParam prm = new CallOpParam(true);
+                        prm.getOpt().setAudioCount(1);
+                        prm.getOpt().setVideoCount(0);
+                        call.makeCall("sip:localhost:6000", prm);
+                        */
                 } catch (Exception e) {}                                
 
                 while (!Thread.currentThread().isInterrupted()) {
