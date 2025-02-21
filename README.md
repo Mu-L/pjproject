@@ -1,6 +1,14 @@
 
-[![C/C++ CI](https://github.com/pjsip/pjproject/actions/workflows/ccpp.yml/badge.svg)](https://github.com/pjsip/pjproject/actions/workflows/ccpp.yml)
+[![CI Linux](https://github.com/pjsip/pjproject/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/pjsip/pjproject/actions/workflows/ci-linux.yml)
+[![CI Mac](https://github.com/pjsip/pjproject/actions/workflows/ci-mac.yml/badge.svg)](https://github.com/pjsip/pjproject/actions/workflows/ci-mac.yml)
+[![CI Windows](https://github.com/pjsip/pjproject/actions/workflows/ci-win.yml/badge.svg)](https://github.com/pjsip/pjproject/actions/workflows/ci-win.yml)
+[![Bitrise iOS](https://img.shields.io/bitrise/70e79dc5-cae8-4cb7-a6cd-9a5bd3f3270f?token=tnXk2DZ71Zmd0qDMhFgiBg&label=CI%20iOS)](https://app.bitrise.io/app/70e79dc5-cae8-4cb7-a6cd-9a5bd3f3270f)
+[![Bitrise Android](https://img.shields.io/bitrise/e4b6aade20ea9eb3?token=byZU0e1BJn_VYg2YuAs-cA&label=CI%20Android)](https://app.bitrise.io/app/e4b6aade20ea9eb3)
+<BR>
+[![OSS-Fuzz](https://oss-fuzz-build-logs.storage.googleapis.com/badges/pjsip.png)](https://oss-fuzz-build-logs.storage.googleapis.com/index.html#pjsip)
+[![Coverity-Scan](https://scan.coverity.com/projects/905/badge.svg)](https://scan.coverity.com/projects/pjsip)
 [![CodeQL](https://github.com/pjsip/pjproject/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/pjsip/pjproject/actions/workflows/codeql-analysis.yml)
+[![docs.pjsip.org](https://readthedocs.org/projects/pjsip/badge/?version=latest)](https://docs.pjsip.org/en/latest/)
 
 
 # PJSIP
@@ -40,6 +48,7 @@ Table of contents:
   - [Sample applications](https://docs.pjsip.org/en/latest/pjsua2/samples.html)
 - Specific guides
   - [Audio](https://docs.pjsip.org/en/latest/specific-guides/index.html#audio)
+  - [Audio Troubleshooting](https://docs.pjsip.org/en/latest/specific-guides/index.html#audio-troubleshooting)
   - [Build and integration](https://docs.pjsip.org/en/latest/specific-guides/index.html#build-integration)
   - [Development and programming](https://docs.pjsip.org/en/latest/specific-guides/index.html#development-programming)
   - [Media](https://docs.pjsip.org/en/latest/specific-guides/index.html#media)

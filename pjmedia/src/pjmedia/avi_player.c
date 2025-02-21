@@ -42,7 +42,7 @@
 #define AVISF_DISABLED          0x00000001
 #define AVISF_VIDEO_PALCHANGES  0x00010000
 
-#define AVI_EOF 0xFFEEFFEE
+#define AVI_EOF (int)0xFFEEFFEE
 
 //#define COMPARE_TAG(doc_tag, tag) (doc_tag==*((pj_uint32_t*)avi_tags[tag]))
 #define COMPARE_TAG(doc_tag, tag) \
@@ -117,6 +117,7 @@ static avi_fmt_info avi_fmts[] =
 
 struct pjmedia_avi_streams
 {
+    pj_pool_t      *pool;
     unsigned        num_streams;
     pjmedia_port  **streams;
 };
@@ -142,12 +143,12 @@ struct avi_reader_port
     void           (*cb2)(pjmedia_port*, void*);
 };
 
-
 static pj_status_t avi_get_frame(pjmedia_port *this_port, 
                                  pjmedia_frame *frame);
 static pj_status_t avi_on_destroy(pjmedia_port *this_port);
 
-static struct avi_reader_port *create_avi_port(pj_pool_t *pool)
+static struct avi_reader_port *create_avi_port(pj_pool_t *pool,
+                                               pj_grp_lock_t *grp_lock)
 {
     const pj_str_t name = pj_str("file");
     struct avi_reader_port *port;
@@ -166,6 +167,8 @@ static struct avi_reader_port *create_avi_port(pj_pool_t *pool)
     port->base.get_frame = &avi_get_frame;
     port->base.on_destroy = &avi_on_destroy;
 
+    pjmedia_port_init_grp_lock(&port->base, pool, grp_lock);
+
     return port;
 }
 
@@ -183,8 +186,9 @@ static pj_status_t file_read3(pj_oshandle_t fd, void *data, pj_ssize_t size,
     /* Normalize AVI header fields values from little-endian to host
      * byte order.
      */
-    if (bits > 0)
+    if (bits > 0) {
         data_to_host(data, bits, size_read);
+    }
 
     if (size_read != size_to_read) {
         if (psz_read)
@@ -195,11 +199,19 @@ static pj_status_t file_read3(pj_oshandle_t fd, void *data, pj_ssize_t size,
     return status;
 }
 
+
+static void streams_on_destroy(void *arg)
+{
+    pjmedia_avi_streams *streams = (pjmedia_avi_streams*)arg;
+    pj_pool_safe_release(&streams->pool);
+}
+
+
 /*
  * Create AVI player port.
  */
 PJ_DEF(pj_status_t)
-pjmedia_avi_player_create_streams(pj_pool_t *pool,
+pjmedia_avi_player_create_streams(pj_pool_t *pool_,
                                   const char *filename,
                                   unsigned options,
                                   pjmedia_avi_streams **p_streams)
@@ -208,36 +220,54 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
     struct avi_reader_port *fport[PJMEDIA_AVI_MAX_NUM_STREAMS];
     pj_off_t pos;
     unsigned i, nstr = 0;
+    pj_pool_t *pool = NULL;
+    pj_grp_lock_t *grp_lock = NULL;
     pj_status_t status = PJ_SUCCESS;
 
     /* Check arguments. */
-    PJ_ASSERT_RETURN(pool && filename && p_streams, PJ_EINVAL);
+    PJ_ASSERT_RETURN(pool_ && filename && p_streams, PJ_EINVAL);
 
     /* Check the file really exists. */
     if (!pj_file_exists(filename)) {
         return PJ_ENOTFOUND;
     }
 
+    /* Create own pool */
+    pool = pj_pool_create(pool_->factory, "aviplayer", 500, 500, NULL);
+    PJ_ASSERT_RETURN(pool, PJ_ENOMEM);
+
+    /* Create group lock */
+    status = pj_grp_lock_create(pool, NULL, &grp_lock);
+    if (status != PJ_SUCCESS)
+        goto on_error;
+
     /* Create fport instance. */
-    fport[0] = create_avi_port(pool);
+    fport[0] = create_avi_port(pool, grp_lock);
     if (!fport[0]) {
-        return PJ_ENOMEM;
+        /* Destroy group lock here to avoid leak */
+        pj_grp_lock_destroy(grp_lock);
+        grp_lock = NULL;
+
+        status = PJ_ENOMEM;
+        goto on_error;
     }
 
     /* Get the file size. */
     fport[0]->fsize = pj_file_size(filename);
 
     /* Size must be more than AVI header size */
-    if (fport[0]->fsize <= sizeof(riff_hdr_t) + sizeof(avih_hdr_t) + 
-                           sizeof(strl_hdr_t))
+    if (fport[0]->fsize <= (pj_off_t)(sizeof(riff_hdr_t) + sizeof(avih_hdr_t) +
+                                      sizeof(strl_hdr_t)))
     {
-        return PJMEDIA_EINVALIMEDIATYPE;
+        status = PJMEDIA_EINVALIMEDIATYPE;
+        goto on_error;
     }
 
     /* Open file. */
-    status = pj_file_open(pool, filename, PJ_O_RDONLY, &fport[0]->fd);
+    status = pj_file_open(pool, filename, PJ_O_RDONLY | PJ_O_CLOEXEC,
+                          &fport[0]->fd);
     if (status != PJ_SUCCESS)
-        return status;
+        goto on_error;
 
     /* Read the RIFF + AVIH header. */
     status = file_read(fport[0]->fd, &avi_hdr,
@@ -303,16 +333,15 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
             goto on_error;
 
         /* Normalize the endian */
-        if (elem == sizeof(strf_video_hdr_t))
+        if (elem == sizeof(strf_video_hdr_t)) {
             data_to_host2(&avi_hdr.strf_hdr[i],
-                          sizeof(strf_video_hdr_sizes)/
-                          sizeof(strf_video_hdr_sizes[0]),
+                          PJ_ARRAY_SIZE(strf_video_hdr_sizes),
                           strf_video_hdr_sizes);
-        else if (elem == sizeof(strf_audio_hdr_t))
+        } else if (elem == sizeof(strf_audio_hdr_t)) {
             data_to_host2(&avi_hdr.strf_hdr[i],
-                          sizeof(strf_audio_hdr_sizes)/
-                          sizeof(strf_audio_hdr_sizes[0]),
+                          PJ_ARRAY_SIZE(strf_audio_hdr_sizes),
                           strf_audio_hdr_sizes);
+        }
 
         /* Skip the remainder of the header */
         size_to_read = avi_hdr.strl_hdr[i].list_sz - (sizeof(strl_hdr_t) -
@@ -395,7 +424,7 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
             }
 
             fmt_id = avi_hdr.strl_hdr[i].codec;
-            for (j = sizeof(avi_fmts)/sizeof(avi_fmts[0])-1; j >= 0; j--) {
+            for (j = (int)PJ_ARRAY_SIZE(avi_fmts)-1; j >= 0; j--) {
                 /* Check supported video formats here */
                 if (fmt_id == avi_fmts[j].fmt_id) {
                     if (avi_fmts[j].eff_fmt_id)
@@ -434,14 +463,14 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
 
         if (nstr > 0) {
             /* Create fport instance. */
-            fport[nstr] = create_avi_port(pool);
+            fport[nstr] = create_avi_port(pool, grp_lock);
             if (!fport[nstr]) {
                 status = PJ_ENOMEM;
                 goto on_error;
             }
 
             /* Open file. */
-            status = pj_file_open(pool, filename, PJ_O_RDONLY,
+            status = pj_file_open(pool, filename, PJ_O_RDONLY | PJ_O_CLOEXEC,
                                   &fport[nstr]->fd);
             if (status != PJ_SUCCESS)
                 goto on_error;
@@ -541,6 +570,13 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
     for (i = 0; i < nstr; i++)
         (*p_streams)->streams[i] = &fport[i]->base;
 
+    status = pj_grp_lock_add_handler(grp_lock, NULL, *p_streams,
+                                     &streams_on_destroy);
+    if (status != PJ_SUCCESS)
+        goto on_error;
+
+    (*p_streams)->pool = pool;
+
     PJ_LOG(4,(THIS_FILE, 
               "AVI file player '%.*s' created with "
               "%d media ports",
@@ -551,9 +587,13 @@ pjmedia_avi_player_create_streams(pj_pool_t *pool,
     return PJ_SUCCESS;
 
 on_error:
-    fport[0]->base.on_destroy(&fport[0]->base);
-    for (i = 1; i < nstr; i++)
-        fport[i]->base.on_destroy(&fport[i]->base);
+    if (grp_lock) {
+        pjmedia_port_destroy(&fport[0]->base);
+        for (i = 1; i < nstr; i++)
+            pjmedia_port_destroy(&fport[i]->base);
+    }
+    pj_pool_release(pool);
+
     if (status == AVI_EOF)
         return PJMEDIA_EINVALIMEDIATYPE;
     return status;

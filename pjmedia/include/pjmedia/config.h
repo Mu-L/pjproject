@@ -47,14 +47,14 @@
  * Initial memory block for media endpoint.
  */
 #ifndef PJMEDIA_POOL_LEN_ENDPT
-#   define PJMEDIA_POOL_LEN_ENDPT               512
+#   define PJMEDIA_POOL_LEN_ENDPT               8000
 #endif
 
 /**
  * Memory increment for media endpoint.
  */
 #ifndef PJMEDIA_POOL_INC_ENDPT
-#   define PJMEDIA_POOL_INC_ENDPT               512
+#   define PJMEDIA_POOL_INC_ENDPT               4000
 #endif
 
 /**
@@ -65,10 +65,19 @@
 #endif
 
 /**
- * Memory increment for evnt manager.
+ * Memory increment for event manager.
  */
 #ifndef PJMEDIA_POOL_INC_EVTMGR
 #   define PJMEDIA_POOL_INC_EVTMGR              500
+#endif
+
+/**
+ * Maximum number of events that can be handled by event manager.
+ *
+ * Default: 16
+ */
+#ifndef PJMEDIA_EVENT_MAX_EVENTS
+#   define PJMEDIA_EVENT_MAX_EVENTS             16
 #endif
 
 /**
@@ -369,15 +378,17 @@
  * Sample rate conversion backends.
  * Select one of these backends in PJMEDIA_RESAMPLE_IMP.
  */
-#define PJMEDIA_RESAMPLE_NONE               1   /**< No resampling.         */
-#define PJMEDIA_RESAMPLE_LIBRESAMPLE        2   /**< Sample rate conversion 
-                                                     using libresample.  */
-#define PJMEDIA_RESAMPLE_SPEEX              3   /**< Sample rate conversion 
-                                                     using Speex. */
-#define PJMEDIA_RESAMPLE_LIBSAMPLERATE      4   /**< Sample rate conversion 
-                                                     using libsamplerate 
-                                                     (a.k.a Secret Rabbit Code)
-                                                 */
+/** No resampling */
+#define PJMEDIA_RESAMPLE_NONE               1
+
+/** Sample rate conversion using libresample */
+#define PJMEDIA_RESAMPLE_LIBRESAMPLE        2
+
+/** Sample rate conversion using Speex */
+#define PJMEDIA_RESAMPLE_SPEEX              3
+
+/** Sample rate conversion using libsamplerate (a.k.a Secret Rabbit Code) */
+#define PJMEDIA_RESAMPLE_LIBSAMPLERATE      4
 
 /**
  * Select which resample implementation to use. Currently pjmedia supports:
@@ -440,6 +451,9 @@
 /**
  * DTMF/telephone-event duration, in timestamp. To specify the duration in
  * milliseconds, use the setting PJMEDIA_DTMF_DURATION_MSEC instead.
+ *
+ * Note that for a clockrate of 8 KHz, a dtmf duration of 1600 timestamp
+ * units (the default value of PJMEDIA_DTMF_DURATION) is equivalent to 200 ms. 
  */
 #ifndef PJMEDIA_DTMF_DURATION           
 #  define PJMEDIA_DTMF_DURATION                 1600    /* in timestamp */
@@ -449,12 +463,9 @@
 /**
  * DTMF/telephone-event duration, in milliseconds. If the value is greater
  * than zero, than this setting will be used instead of PJMEDIA_DTMF_DURATION.
- *
- * Note that for a clockrate of 8 KHz, a dtmf duration of 1600 timestamp
- * units (the default value of PJMEDIA_DTMF_DURATION) is equivalent to 200 ms. 
  */
 #ifndef PJMEDIA_DTMF_DURATION_MSEC              
-#  define PJMEDIA_DTMF_DURATION_MSEC            0
+#  define PJMEDIA_DTMF_DURATION_MSEC            200
 #endif
 
 
@@ -630,7 +641,7 @@
 #endif
 
 /**
- * Perform RTP payload type checking in the audio stream. Normally the peer
+ * Perform RTP payload type checking in the media stream. Normally the peer
  * MUST send RTP with payload type as we specified in our SDP. Certain
  * agents may not be able to follow this hence the only way to have
  * communication is to disable this check.
@@ -694,7 +705,7 @@
 
 
 /**
- * Speex Accoustic Echo Cancellation (AEC).
+ * Speex Acoustic Echo Cancellation (AEC).
  * By default is enabled.
  */
 #ifndef PJMEDIA_HAS_SPEEX_AEC
@@ -724,7 +735,7 @@
 
 
 /**
- * WebRtc Accoustic Echo Cancellation (AEC).
+ * WebRtc Acoustic Echo Cancellation (AEC).
  * By default is disabled.
  */
 #ifndef PJMEDIA_HAS_WEBRTC_AEC
@@ -806,6 +817,22 @@
  */
 #ifndef PJMEDIA_SDP_NEG_ANSWER_SYMMETRIC_PT
 #   define PJMEDIA_SDP_NEG_ANSWER_SYMMETRIC_PT          1
+#endif
+
+/**
+ * The SDP negotiator will maintain that the mapping from a particular
+ * dynamic payload type number to a particular codec does not change,
+ * as mandated by RFC 3264 section 8.3.2.
+ * By default, the mapping is maintained for local endpoint only, i.e.
+ * it only takes into account local offer and local answer.
+ * Enable this if application wishes to maintain PT->codec mapping for
+ * remote endpoint as well, i.e. to update the mapping based on remote
+ * offer and answer too.
+ *
+ * Default is 0 (no)
+ */
+#ifndef PJMEDIA_SDP_NEG_MAINTAIN_REMOTE_PT_MAP
+#   define PJMEDIA_SDP_NEG_MAINTAIN_REMOTE_PT_MAP       0
 #endif
 
 
@@ -957,8 +984,8 @@
 
 /**
  * Specify the tone generator algorithm to be used. Please see 
- * http://trac.pjsip.org/repos/wiki/Tone_Generator for the performance
- * analysis results of the various tone generator algorithms.
+ * https://docs.pjsip.org/en/latest/specific-guides/media/tonegen.html for
+ * the performance analysis results of the various tone generator algorithms.
  *
  * Default value:
  *  - PJMEDIA_TONEGEN_FLOATING_POINT when PJ_HAS_FLOATING_POINT is set
@@ -1071,6 +1098,16 @@
  */
 #ifndef PJMEDIA_SRTP_DTLS_OSSL_CIPHERS
 #   define PJMEDIA_SRTP_DTLS_OSSL_CIPHERS           "DEFAULT"
+#endif
+
+/**
+ * Enabled this to check the source address of ClientHello message coming
+ * from a valid address. See PJ_ICE_SESS_CHECK_SRC_ADDR when ICE is used.
+ *
+ * Default value: 0
+ */
+#ifndef PJMEDIA_SRTP_DTLS_CHECK_HELLO_ADDR
+#   define PJMEDIA_SRTP_DTLS_CHECK_HELLO_ADDR       0
 #endif
 
 
@@ -1197,8 +1234,14 @@
 #endif
 
 
-/* Setting to determine if media transport should switch RTP and RTCP
+/**
+ * Setting to determine if media transport should switch RTP and RTCP
  * remote address to the source address of the packets it receives.
+ * This feature is usually used for handling NAT traversal issues,
+ * also known as symmetric RTP and 'latching' techniques.
+ *
+ * See also run-time options #PJMEDIA_UDP_NO_SRC_ADDR_CHECKING and
+ * #PJMEDIA_ICE_NO_SRC_ADDR_CHECKING.
  *
  * By default it is enabled.
  */
@@ -1679,11 +1722,17 @@
  * agents may not be able to follow this hence the only way to have
  * communication is to disable this check.
  *
- * Default: PJMEDIA_STREAM_CHECK_RTP_PT (follow audio stream's setting)
+ * Note: Since media streams now share some common implementation,
+ * the setting MUST have the same value as PJMEDIA_STREAM_CHECK_RTP_PT.
  */
-#ifndef PJMEDIA_VID_STREAM_CHECK_RTP_PT
-#   define PJMEDIA_VID_STREAM_CHECK_RTP_PT      PJMEDIA_STREAM_CHECK_RTP_PT
+#if defined(PJMEDIA_VID_STREAM_CHECK_RTP_PT) && \
+    PJMEDIA_VID_STREAM_CHECK_RTP_PT != PJMEDIA_STREAM_CHECK_RTP_PT
+#    pragma message("PJMEDIA_VID_STREAM_CHECK_RTP_PT must have the same " \
+                    "value as PJMEDIA_STREAM_CHECK_RTP_PT...")
 #endif
+
+#undef PJMEDIA_VID_STREAM_CHECK_RTP_PT
+#define PJMEDIA_VID_STREAM_CHECK_RTP_PT      PJMEDIA_STREAM_CHECK_RTP_PT
 
 /**
  * @}
